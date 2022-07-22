@@ -4,9 +4,14 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
+
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/watch"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -18,9 +23,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/manager/signals"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+
+	"k8s.io/client-go/tools/cache"
 )
 
-func main() {
+func mainold() {
 	nr := &NodeReconciler{}
 	logf.SetLogger(zap.New())
 
@@ -110,4 +120,54 @@ func selectOnlyMasterNode() predicate.Predicate {
 		_, master := n.Labels["node-role.kubernetes.io/master"]
 		return master
 	})
+}
+
+// informer way
+func main() {
+	c := config.GetConfigOrDie()
+
+	clientSet, _ := kubernetes.NewForConfig(c)
+
+	ctx := context.Background()
+	sig := make(chan struct{})
+	sigTerm := make(chan os.Signal, 1)
+	signal.Notify(sigTerm, syscall.SIGTERM)
+
+	nodeNotReadyInformer := cache.NewSharedInformer(
+		&cache.ListWatch{
+			ListFunc: func(options meta_v1.ListOptions) (runtime.Object, error) {
+				return clientSet.CoreV1().Nodes().List(ctx, options)
+			},
+			WatchFunc: func(options meta_v1.ListOptions) (watch.Interface, error) {
+				return clientSet.CoreV1().Nodes().Watch(ctx, options)
+			},
+		},
+		&corev1.Node{},
+		0,
+	)
+
+	// wq := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
+	// defer wq.Shutdown()
+
+	nodeNotReadyInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(o interface{}) {
+		},
+		UpdateFunc: func(oldObj, newObj interface{}) {
+
+			switch newObj.(type) {
+			case *corev1.Node:
+				oldNode := oldObj.(*corev1.Node)
+				newNode := newObj.(*corev1.Node)
+				fmt.Printf("Old: %+v, New: %+v", oldNode.Labels, newNode.Labels)
+			}
+
+		},
+		DeleteFunc: func(o interface{}) {
+		},
+	})
+
+	println("start...")
+	nodeNotReadyInformer.Run(sig)
+
+	<-sigTerm
 }
